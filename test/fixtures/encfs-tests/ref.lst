@@ -1,0 +1,16 @@
+.
+./file_2
+./dir_1
+./dir_1/file_2
+./dir_1/subdir_1_2
+./dir_1/file_1
+./dir_1/file_1_1
+./dir_1/subdir_1_1
+./dir_1/subdir_1_1/subdir_1_1_1
+./dir_1/subdir_1_1/subdir_1_1_1/file_1_1_1_1
+./dir_1/subdir_1_1/subdir_1_1_1/file_1_1_1_2
+./dir_2
+./dir_2/file_2_2
+./dir_2/file_2_1
+./file_1
+./file_3

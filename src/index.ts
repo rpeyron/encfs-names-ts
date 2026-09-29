@@ -1,5 +1,3 @@
-import { XMLParser } from "fast-xml-parser";
-
 export type FilenameEncoding = "stream" | "block";
 
 export interface EncfsNameCodecOptions {
@@ -405,41 +403,237 @@ interface V6Config {
 }
 
 function readV6Config(xml: string): V6Config {
-  let parsed: unknown;
-  try {
-    parsed = new XMLParser({
-      ignoreAttributes: true,
-      parseTagValue: true,
-      trimValues: true,
-    }).parse(xml);
-  } catch {
-    throw new EncfsCodecError("Invalid EncFS XML configuration");
+  const doc = parseXmlDocument(xml);
+  if (doc.name !== "boost_serialization") {
+    throw new EncfsCodecError("Missing or invalid XML field: boost_serialization");
   }
-  const root = asRecord(parsed, "XML root");
-  const serialization = asRecord(root["boost_serialization"], "boost_serialization");
-  const config = asRecord(serialization["cfg"], "cfg");
-  const cipher = asRecord(config["cipherAlg"], "cipherAlg");
-  const name = asRecord(config["nameAlg"], "nameAlg");
+  const config = requiredChild(doc, "cfg");
+  const cipher = requiredChild(config, "cipherAlg");
+  const name = requiredChild(config, "nameAlg");
 
   return {
-    cipherName: readString(cipher["name"], "cipherAlg.name"),
-    cipherMajor: readInteger(cipher["major"], "cipherAlg.major"),
-    nameName: readString(name["name"], "nameAlg.name"),
-    keySize: readInteger(config["keySize"], "keySize"),
-    iterations: readInteger(config["kdfIterations"], "kdfIterations"),
-    salt: decodeStandardBase64(readString(config["saltData"], "saltData")),
+    cipherName: readString(childText(cipher, "name"), "cipherAlg.name"),
+    cipherMajor: readInteger(childText(cipher, "major"), "cipherAlg.major"),
+    nameName: readString(childText(name, "name"), "nameAlg.name"),
+    keySize: readInteger(childText(config, "keySize"), "keySize"),
+    iterations: readInteger(childText(config, "kdfIterations"), "kdfIterations"),
+    salt: decodeStandardBase64(readString(childText(config, "saltData"), "saltData")),
     encodedKeyData: decodeStandardBase64(
-      readString(config["encodedKeyData"], "encodedKeyData"),
+      readString(childText(config, "encodedKeyData"), "encodedKeyData"),
     ),
-    chainedNameIv: readBoolean(config["chainedNameIV"], "chainedNameIV"),
+    chainedNameIv: readBoolean(childText(config, "chainedNameIV"), "chainedNameIV"),
   };
 }
 
-function asRecord(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new EncfsCodecError(`Missing or invalid XML field: ${field}`);
+interface XmlElement {
+  name: string;
+  text: string;
+  children: XmlElement[];
+}
+
+/**
+ * Parse XML without any library: the browser's native DOMParser when present
+ * (zero bytes), a small self-contained parser otherwise (Node / test runners).
+ * Both produce the same element tree for the boost_serialization schema.
+ */
+function parseXmlDocument(xml: string): XmlElement {
+  try {
+    const DomParser = (
+      globalThis as {
+        DOMParser?: new () => {
+          parseFromString(source: string, mimeType: string): DomDocLike;
+        };
+      }
+    ).DOMParser;
+    if (DomParser) return parseWithDomParser(xml, DomParser);
+  } catch (error) {
+    if (error instanceof EncfsCodecError) throw error;
+    // Fall through to the internal parser for exotic host environments.
   }
-  return value as Record<string, unknown>;
+  return parseWithInternalParser(xml);
+}
+
+interface DomDocLike {
+  documentElement: DomNodeLike | null;
+  getElementsByTagName(name: string): ArrayLike<unknown>;
+}
+
+interface DomNodeLike {
+  nodeType: number;
+  nodeName: string;
+  textContent: string | null;
+  childNodes: ArrayLike<DomNodeLike>;
+}
+
+function parseWithDomParser(
+  xml: string,
+  DomParser: new () => { parseFromString(source: string, mimeType: string): DomDocLike },
+): XmlElement {
+  const doc = new DomParser().parseFromString(xml, "application/xml");
+  if (
+    !doc.documentElement ||
+    doc.documentElement.nodeName === "parsererror" ||
+    doc.getElementsByTagName("parsererror").length > 0
+  ) {
+    throw new EncfsCodecError("Invalid EncFS XML configuration");
+  }
+  return domToElement(doc.documentElement);
+}
+
+function domToElement(node: DomNodeLike): XmlElement {
+  const element: XmlElement = { name: node.nodeName, text: "", children: [] };
+  const nodes = node.childNodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const child = nodes[i]!;
+    if (child.nodeType === 1 && child.nodeName) {
+      element.children.push(domToElement(child));
+    } else if (child.nodeType === 3 || child.nodeType === 4) {
+      element.text += decodeXmlEntities(child.textContent ?? "");
+    }
+  }
+  element.text = element.text.trim();
+  return element;
+}
+
+function parseWithInternalParser(xml: string): XmlElement {
+  let index = 0;
+  let root: XmlElement | null = null;
+  const stack: XmlElement[] = [];
+  const invalid: () => never = (): never => {
+    throw new EncfsCodecError("Invalid EncFS XML configuration");
+  };
+
+  const appendText = (value: string): void => {
+    const top = stack[stack.length - 1];
+    if (top && value) top.text += decodeXmlEntities(value);
+  };
+
+  while (index < xml.length) {
+    const lt = xml.indexOf("<", index);
+    if (lt < 0) {
+      if (stack.length > 0) appendText(xml.slice(index));
+      break;
+    }
+    if (lt > index) appendText(xml.slice(index, lt));
+
+    if (xml.startsWith("<?", lt)) {
+      const end = xml.indexOf("?>", lt);
+      if (end < 0) invalid();
+      index = end + 2;
+      continue;
+    }
+    if (xml.startsWith("<!--", lt)) {
+      const end = xml.indexOf("-->", lt + 4);
+      if (end < 0) invalid();
+      index = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<![CDATA[", lt)) {
+      const end = xml.indexOf("]]>", lt + 9);
+      if (end < 0) invalid();
+      appendText(xml.slice(lt + 9, end));
+      index = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<!", lt)) {
+      index = skipDoctype(xml, lt);
+      continue;
+    }
+    if (xml.startsWith("</", lt)) {
+      const end = xml.indexOf(">", lt);
+      if (end < 0) invalid();
+      const closing = xml.slice(lt + 2, end).trim();
+      const open = stack.pop();
+      if (!open || open.name !== closing) invalid();
+      index = end + 1;
+      continue;
+    }
+
+    // Opening tag: name, then attributes skipped until '>' (quotes respected).
+    let cursor = lt + 1;
+    const nameStart = cursor;
+    while (cursor < xml.length && !/[\s/>]/.test(xml[cursor]!)) cursor++;
+    const name = xml.slice(nameStart, cursor);
+    if (!name) invalid();
+    let selfClosing = false;
+    while (cursor < xml.length) {
+      const character = xml[cursor]!;
+      if (character === '"' || character === "'") {
+        cursor++;
+        while (cursor < xml.length && xml[cursor] !== character) cursor++;
+        cursor++;
+        continue;
+      }
+      if (character === ">") {
+        cursor++;
+        break;
+      }
+      if (character === "/" && xml[cursor + 1] === ">") {
+        selfClosing = true;
+        cursor += 2;
+        break;
+      }
+      cursor++;
+    }
+    const element: XmlElement = { name, text: "", children: [] };
+    const parent = stack[stack.length - 1];
+    if (parent) parent.children.push(element);
+    else if (root) invalid();
+    else root = element;
+    if (!selfClosing) stack.push(element);
+    index = cursor;
+  }
+
+  if (stack.length > 0 || !root) invalid();
+  return root;
+}
+
+function skipDoctype(xml: string, start: number): number {
+  let cursor = start + 2;
+  let inSubset = false;
+  while (cursor < xml.length) {
+    const character = xml[cursor]!;
+    if (character === "[") inSubset = true;
+    else if (character === "]") inSubset = false;
+    else if (character === ">" && !inSubset) return cursor + 1;
+    cursor++;
+  }
+  throw new EncfsCodecError("Invalid EncFS XML configuration");
+}
+
+function decodeXmlEntities(value: string): string {
+  if (!value.includes("&")) return value;
+  return value.replace(
+    /&(?:#x([0-9a-fA-F]+)|#([0-9]+)|(amp|lt|gt|quot|apos));/g,
+    (match, hex: string | undefined, dec: string | undefined, named: string | undefined) => {
+      if (named) {
+        return named === "amp" ? "&"
+          : named === "lt" ? "<"
+          : named === "gt" ? ">"
+          : named === "quot" ? '"'
+          : "'";
+      }
+      const code = hex !== undefined ? Number.parseInt(hex, 16) : Number.parseInt(dec ?? "", 10);
+      return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : match;
+    },
+  );
+}
+
+function childElement(parent: XmlElement, name: string): XmlElement | undefined {
+  return parent.children.find((child) => child.name === name);
+}
+
+function requiredChild(parent: XmlElement, name: string): XmlElement {
+  const child = childElement(parent, name);
+  if (!child) throw new EncfsCodecError(`Missing or invalid XML field: ${name}`);
+  return child;
+}
+
+function childText(parent: XmlElement, name: string): string | undefined {
+  const child = childElement(parent, name);
+  return child ? child.text.trim() : undefined;
 }
 
 function readString(value: unknown, field: string): string {

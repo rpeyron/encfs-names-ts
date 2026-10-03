@@ -1,3 +1,5 @@
+![AI Generated](https://raw.githubusercontent.com/rpeyron/rpeyron/master/images/badges/badge-ia.svg)
+
 # EncFS Filename Codec
 
 A browser-compatible TypeScript library for encoding and decoding EncFS path components and paths. It does not encrypt file contents or mount a filesystem.

@@ -1,5 +1,8 @@
 # Rust and C++ EncFS Filename Differences
 
+This file is AI generated from code in https://github.com/vgough/encfs (master branch for rust code, and 1.9.5 branch for C++ code)
+
+
 ## Scope
 
 This note compares the filename/path codec in the bundled C++ EncFS v1.9.5 source (`encfs/encfs/`) with the Rust port (`encfs-src/src/`). It focuses on the V6 XML fixtures under `encfs-tests/` and the `ssl/aes` / `nameio/block` interface. The compatible TypeScript behavior follows the C++ v1.9.5 reference for these fixtures.

@@ -1,5 +1,8 @@
 # EncFS Filename Encoding Specification
 
+This file is AI generated from code in https://github.com/vgough/encfs (master branch for rust code, and 1.9.5 branch for C++ code)
+
+
 ## Scope
 
 This document specifies filename and path-component encoding implemented by the Rust EncFS port in `encfs-src/src/crypto/ssl.rs`, `src/encfsctl.rs`, `src/fs.rs`, and `src/config.rs`. It covers the legacy `ssl/aes` filename codec used by the supplied V6 fixtures. It does not encrypt file contents, implement FUSE, or define the binary encoding of whole EncFS configuration files.
